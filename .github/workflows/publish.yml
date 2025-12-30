@@ -2,13 +2,8 @@ name: Publish
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - v*
-
-env:
-  MAX_RETRIES: 3   # ポーリングの最大回数
-  SLEEP_SEC: 15    # ポーリング間隔（秒）
+  release:
+    types: [published]
 
 jobs:
   publish:
@@ -32,5 +27,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: extension
+          name: hide-meta-files-on-github
           path: extension.zip
