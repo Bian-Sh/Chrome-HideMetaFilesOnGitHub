@@ -1,4 +1,4 @@
-🇺🇸 Hide `.meta` files on GitHub.
+🇺🇸 Hide `.meta` files in Unity engine project hosted on GitHub.
 
 🇯🇵 GitHub のリポジトリ画面で `.meta` ファイルを非表示にします。
 
