@@ -3,7 +3,7 @@
 🇯🇵 GitHub のリポジトリ画面で `.meta` ファイルを非表示にします。
 
 
-![](https://raw.githubusercontent.com/sator-imaging/Chrome-HideMetaFilesOnGitHub/refs/heads/main/InAction.gif)
+![](docs/images/InAction.gif)
 
 
 
