@@ -10,9 +10,15 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://github.com/*"],
+      "matches": [ "https://github.com/*" ],
       "js": ["content.js"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*.png"],
+      "matches": ["https://github.com/*"]
     }
   ]
 }
