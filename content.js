@@ -30,6 +30,11 @@
     let observerLeft = null;
     let observerRight = null;
 
+    // Extra observer: GitHub often swaps the file list via SPA without replacing the LEFT/RIGHT roots immediately.
+    // When a page initially has no .meta files, our per-root observers won't be created, so we need a fallback
+    // observer to re-bind once the relevant containers appear.
+    let observerBootstrap = null;
+
     // Helpers to extract item names from left and right trees
     function getLeftItemName(item) {
         if (!item) return '';
@@ -370,33 +375,32 @@
         }
     }
 
-    // Page/SPA checks and navigation handling
-    function isGitHubRepoPage() {
-        return /^\/[^\/]+\/[^\/]+/.test(location.pathname);
-    }
+    function setupBootstrapObserver() {
+        if (observerBootstrap) return;
 
-    function leftHasMeta() {
-        const root = document.querySelector(LEFT_ROOT);
-        if (!root) return false;
-        let found = false;
-        root.querySelectorAll('li.PRIVATE_TreeView-item, li.prc-TreeView-TreeViewItem').forEach(it => {
-            const nm = getLeftItemName(it);
-            if (isUnityMeta(nm)) found = true;
+        observerBootstrap = new MutationObserver(() => {
+            // Re-bind per-root observers when GitHub replaces panels.
+            const leftRoot = document.querySelector(LEFT_ROOT);
+            const rightRoot = document.querySelector(RIGHT_ROOT);
+
+            // If any root exists but we are not observing it yet, re-setup.
+            const needLeft = !!leftRoot && !observerLeft;
+            const needRight = !!rightRoot && !observerRight;
+
+            if (needLeft || needRight) {
+                if (observerLeft) observerLeft.disconnect();
+                if (observerRight) observerRight.disconnect();
+                observerLeft = observerRight = null;
+                setupObservers();
+            }
+
+            // Always re-evaluate button visibility on significant DOM swaps.
+            maybeUpdateFloatingButtonVisibility();
+            if (enabledForThisPage) applyHideAll();
         });
-        return found;
-    }
 
-    function rightHasMeta() {
-        let found = false;
-        document.querySelectorAll('.react-directory-row').forEach(row => {
-            const nm = getRightRowName(row);
-            if (isUnityMeta(nm)) found = true;
-        });
-        return found;
-    }
-
-    function hasMetaOnPage() {
-        return leftHasMeta() || rightHasMeta();
+        // Observe the whole body; cheap callback + quick checks.
+        observerBootstrap.observe(document.body, { childList: true, subtree: true });
     }
 
     // Setup incremental observers
@@ -447,6 +451,13 @@
 
         setupObservers();
         syncFloatingButtonPosition();
+
+        // GitHub SPA navigation may update the DOM after location change.
+        // Do a delayed re-check to ensure button/observers are created when content arrives.
+        setTimeout(() => {
+            maybeUpdateFloatingButtonVisibility();
+            if (enabledForThisPage) applyHideAll();
+        }, 300);
     }
 
     function patchLocationChange() {
@@ -488,6 +499,7 @@
         if (enabledForThisPage) applyHideAll();
         maybeUpdateFloatingButtonVisibility();
         setupObservers();
+        setupBootstrapObserver();
 
         patchLocationChange();
         setupMessageListener();
@@ -504,5 +516,33 @@
         document.addEventListener('DOMContentLoaded', setup);
     } else {
         setup();
+    }
+
+    function isGitHubRepoPage() {
+        return /^\/[^\/]+\/[^\/]+/.test(location.pathname);
+    }
+
+    function leftHasMeta() {
+        const root = document.querySelector(LEFT_ROOT);
+        if (!root) return false;
+        let found = false;
+        root.querySelectorAll('li.PRIVATE_TreeView-item, li.prc-TreeView-TreeViewItem').forEach(it => {
+            const nm = getLeftItemName(it);
+            if (isUnityMeta(nm)) found = true;
+        });
+        return found;
+    }
+
+    function rightHasMeta() {
+        let found = false;
+        document.querySelectorAll('.react-directory-row').forEach(row => {
+            const nm = getRightRowName(row);
+            if (isUnityMeta(nm)) found = true;
+        });
+        return found;
+    }
+
+    function hasMetaOnPage() {
+        return leftHasMeta() || rightHasMeta();
     }
 })();
