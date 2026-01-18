@@ -11,20 +11,24 @@
     const LEFT_ROOT = "ul[role='tree'][aria-label='Files']";
     const RIGHT_ROOT = ".react-directory";
 
-    // Local storage key for persistent toggle state
-    const STORAGE_KEY = 'hideMetaEnabled_leftRight_v2';
     // Local storage key for floating button position
     const FLOAT_POS_KEY = 'hideMetaFloatingBtnPos_v1';
 
-    let hideEnabled = true; // default; may be overwritten by storage/state
-    let disableDynamicHiding = false;  // when true, dynamic hiding is paused (via popup)
+    const SETTINGS_KEY = 'unityMetaFilterSettings_v1';
+
+    const DEFAULT_SETTINGS = {
+        filterLeftTree: true,
+        filterRightList: true
+    };
+
+    let settings = { ...DEFAULT_SETTINGS };
+
+    // Session-only master switch for the floating button
+    let enabledForThisPage = true;
 
     // Mutation observers (to keep in sync with dynamic content)
     let observerLeft = null;
     let observerRight = null;
-
-    // UI elements
-    let popupEl = null;
 
     // Helpers to extract item names from left and right trees
     function getLeftItemName(item) {
@@ -40,19 +44,22 @@
         if (!row) return '';
         const cell = row.querySelector('.react-directory-filename-cell');
         if (cell && cell.textContent) return cell.textContent.trim();
-        // Fallback: try any nested span text
         const span = row.querySelector('span');
         if (span && span.textContent) return span.textContent.trim();
         return '';
     }
 
-    // Hide functions for both trees
+    function isUnityMeta(name) {
+        return !!name && name.endsWith('.meta');
+    }
+
+    // Hide/show functions for both trees
     function hideLeftMetaInRoot(root) {
-        if (!root) return;
+        if (!root || !enabledForThisPage || !settings.filterLeftTree) return;
         const items = root.querySelectorAll('li.PRIVATE_TreeView-item, li.prc-TreeView-TreeViewItem');
         items.forEach(it => {
             const name = getLeftItemName(it);
-            if (name && name.endsWith('.meta')) {
+            if (isUnityMeta(name)) {
                 it.style.display = 'none';
             }
         });
@@ -63,16 +70,17 @@
         const items = root.querySelectorAll('li.PRIVATE_TreeView-item, li.prc-TreeView-TreeViewItem');
         items.forEach(it => {
             const name = getLeftItemName(it);
-            if (name && name.endsWith('.meta')) {
+            if (isUnityMeta(name)) {
                 it.style.display = '';
             }
         });
     }
 
     function hideRightMetas() {
+        if (!enabledForThisPage || !settings.filterRightList) return;
         document.querySelectorAll('.react-directory-row').forEach(row => {
             const name = getRightRowName(row);
-            if (name && name.endsWith('.meta')) {
+            if (isUnityMeta(name)) {
                 row.style.display = 'none';
             }
         });
@@ -81,7 +89,7 @@
     function showRightMetas() {
         document.querySelectorAll('.react-directory-row').forEach(row => {
             const name = getRightRowName(row);
-            if (name && name.endsWith('.meta')) {
+            if (isUnityMeta(name)) {
                 row.style.display = '';
             }
         });
@@ -102,22 +110,16 @@
     // Simple localization
     const I18N = {
         en: {
-            popupHidden: 'Hidden .meta files',
-            popupShow: 'Show',
-            tipShown: 'Meta files are shown. Click to hide.',
-            tipHidden: 'Meta files are hidden. Click to show.'
+            tipEnabled: 'Unity .meta files are hidden. Click to show.',
+            tipDisabled: 'Unity .meta files are shown. Click to hide.'
         },
         ja: {
-            popupHidden: '.meta ファイルを非表示にしました',
-            popupShow: '表示する',
-            tipShown: 'meta ファイルは表示中。クリックで非表示。',
-            tipHidden: 'meta ファイルは非表示中。クリックで表示。'
+            tipEnabled: 'Unity .meta は非表示中。クリックで表示。',
+            tipDisabled: 'Unity .meta は表示中。クリックで非表示。'
         },
         zh: {
-            popupHidden: '已隐藏 meta 文件',
-            popupShow: '显示',
-            tipShown: 'meta 文件已显示，点击隐藏',
-            tipHidden: 'meta 文件已隐藏，点击显示'
+            tipEnabled: 'Unity .meta 已隐藏，点击显示',
+            tipDisabled: 'Unity .meta 已显示，点击隐藏'
         }
     };
     function t(key) {
@@ -130,8 +132,6 @@
     const BTN_SIZE = 32;
 
     function getExtensionIconUrl(fileName) {
-        // Content scripts run on github.com; relative URLs resolve to github.com.
-        // For extensions (including "Load unpacked"), runtime.getURL is the correct way.
         try {
             const rt = (typeof chrome !== 'undefined' && chrome.runtime) ? chrome.runtime
                 : (typeof browser !== 'undefined' && browser.runtime) ? browser.runtime
@@ -140,25 +140,20 @@
                 return rt.getURL('icons/' + fileName);
             }
         } catch { }
-
-        // Last resort: most likely wrong on github.com, but keep as a fallback.
         return 'icons/' + fileName;
     }
 
     function verifyIconLoad(url) {
         try {
             const img = new Image();
-            img.onload = () => { /* ok */ };
-            img.onerror = () => {
-                // This helps diagnose path / permission issues from DevTools
-                console.warn('[HideMeta] Failed to load icon:', url);
-            };
+            img.onerror = () => console.warn('[UnityMetaFilter] Failed to load icon:', url);
             img.src = url;
         } catch { }
     }
 
     function iconForState() {
-        const url = hideEnabled
+        // enabled => hiding .meta => "off" icon means "visibility off"
+        const url = enabledForThisPage
             ? getExtensionIconUrl('visibilitytoggleoff.png')
             : getExtensionIconUrl('visibilitytoggleon.png');
         verifyIconLoad(url);
@@ -166,8 +161,7 @@
     }
 
     function tooltipForState() {
-        // eye open => metas shown
-        return hideEnabled ? t('tipHidden') : t('tipShown');
+        return enabledForThisPage ? t('tipEnabled') : t('tipDisabled');
     }
 
     function clamp(n, min, max) {
@@ -206,7 +200,6 @@
     function setButtonPosition(px, py) {
         if (!floatingBtn) return;
         const size = BTN_SIZE;
-        // Use clientWidth/clientHeight to exclude scrollbar area
         const vw = document.documentElement ? document.documentElement.clientWidth : window.innerWidth;
         const vh = document.documentElement ? document.documentElement.clientHeight : window.innerHeight;
 
@@ -216,19 +209,42 @@
         floatingBtn.style.top = y + 'px';
     }
 
+    function snapToEdgeAndPersist(btn) {
+        const size = BTN_SIZE;
+        const margin = 8;
+        const left = parseFloat(btn.style.left || '0') || 0;
+        const top = parseFloat(btn.style.top || '0') || 0;
+        const vw = document.documentElement ? document.documentElement.clientWidth : window.innerWidth;
+
+        const centerX = left + size / 2;
+        const snapLeft = centerX < vw / 2;
+        const snappedX = snapLeft ? margin : Math.max(margin, vw - size - margin);
+
+        setButtonPosition(snappedX, top);
+
+        const finalLeft = parseFloat(btn.style.left || '0') || 0;
+        const finalTop = parseFloat(btn.style.top || '0') || 0;
+        saveButtonPos({ x: finalLeft, y: finalTop });
+    }
+
+    function syncFloatingButtonPosition() {
+        if (!floatingBtn) return;
+        snapToEdgeAndPersist(floatingBtn);
+    }
+
     function updateFloatingButtonUI() {
         if (!floatingBtn) return;
         floatingBtn.title = tooltipForState();
         const img = floatingBtn.querySelector('img');
         if (img) {
             img.src = iconForState();
-            img.alt = hideEnabled ? 'meta hidden' : 'meta shown';
+            img.alt = enabledForThisPage ? 'meta hidden' : 'meta shown';
         }
     }
 
     function createFloatingButton() {
         const btn = document.createElement('button');
-        btn.id = 'hide-meta-floating-btn';
+        btn.id = 'unity-meta-filter-floating-btn';
         btn.type = 'button';
         Object.assign(btn.style, {
             position: 'fixed',
@@ -249,7 +265,7 @@
 
         const img = document.createElement('img');
         img.src = iconForState();
-        img.alt = hideEnabled ? 'meta hidden' : 'meta shown';
+        img.alt = enabledForThisPage ? 'meta hidden' : 'meta shown';
         Object.assign(img.style, {
             width: '18px',
             height: '18px',
@@ -295,31 +311,10 @@
             e.preventDefault();
         }
 
-        function snapToEdgeAndPersist() {
-            const size = BTN_SIZE;
-            const margin = 8;
-            const left = parseFloat(btn.style.left || '0') || 0;
-            const top = parseFloat(btn.style.top || '0') || 0;
-
-            // Exclude scrollbar area when deciding/snap target
-            const vw = document.documentElement ? document.documentElement.clientWidth : window.innerWidth;
-
-            const centerX = left + size / 2;
-            const snapLeft = centerX < vw / 2;
-            const snappedX = snapLeft ? margin : Math.max(margin, vw - size - margin);
-
-            setButtonPosition(snappedX, top);
-
-            const finalLeft = parseFloat(btn.style.left || '0') || 0;
-            const finalTop = parseFloat(btn.style.top || '0') || 0;
-            saveButtonPos({ x: finalLeft, y: finalTop });
-        }
-
         function onUp(e) {
             if (!dragging) return;
             dragging = false;
-            // Persist then snap to nearest side
-            snapToEdgeAndPersist();
+            snapToEdgeAndPersist(btn);
             e.preventDefault();
         }
 
@@ -336,9 +331,8 @@
                 e.preventDefault();
                 return;
             }
-            hideEnabled = !hideEnabled;
-            localStorage.setItem(STORAGE_KEY, hideEnabled ? '1' : '0');
-            if (hideEnabled) applyHideAll(); else applyShowAll();
+            enabledForThisPage = !enabledForThisPage;
+            if (enabledForThisPage) applyHideAll(); else applyShowAll();
             updateFloatingButtonUI();
             maybeUpdateFloatingButtonVisibility();
             e.preventDefault();
@@ -356,10 +350,7 @@
         updateFloatingButtonUI();
 
         window.addEventListener('resize', () => {
-            if (!floatingBtn) return;
-            const left = parseFloat(floatingBtn.style.left || '0') || 0;
-            const top = parseFloat(floatingBtn.style.top || '0') || 0;
-            setButtonPosition(left, top);
+            syncFloatingButtonPosition();
         });
     }
 
@@ -373,6 +364,7 @@
         if (shouldShow) {
             if (!floatingBtn) createFloatingButton();
             updateFloatingButtonUI();
+            syncFloatingButtonPosition();
         } else {
             if (floatingBtn) removeFloatingButton();
         }
@@ -389,7 +381,7 @@
         let found = false;
         root.querySelectorAll('li.PRIVATE_TreeView-item, li.prc-TreeView-TreeViewItem').forEach(it => {
             const nm = getLeftItemName(it);
-            if (nm && nm.endsWith('.meta')) found = true;
+            if (isUnityMeta(nm)) found = true;
         });
         return found;
     }
@@ -398,7 +390,7 @@
         let found = false;
         document.querySelectorAll('.react-directory-row').forEach(row => {
             const nm = getRightRowName(row);
-            if (nm && nm.endsWith('.meta')) found = true;
+            if (isUnityMeta(nm)) found = true;
         });
         return found;
     }
@@ -412,8 +404,7 @@
         const leftRoot = document.querySelector(LEFT_ROOT);
         if (leftRoot) {
             observerLeft = new MutationObserver(() => {
-                if (disableDynamicHiding) return;
-                if (hideEnabled) applyHideAll();
+                if (enabledForThisPage) applyHideAll();
                 maybeUpdateFloatingButtonVisibility();
             });
             observerLeft.observe(leftRoot, { childList: true, subtree: true });
@@ -422,39 +413,25 @@
         const rightRoot = document.querySelector(RIGHT_ROOT);
         if (rightRoot) {
             observerRight = new MutationObserver(() => {
-                if (disableDynamicHiding) return;
-                if (hideEnabled) applyHideAll();
+                if (enabledForThisPage) applyHideAll();
                 maybeUpdateFloatingButtonVisibility();
             });
             observerRight.observe(rightRoot, { childList: true, subtree: true });
         }
     }
 
-    // Initialize after DOM ready
-    function init() {
-        const stored = localStorage.getItem(STORAGE_KEY);
-        if (stored !== null) {
-            hideEnabled = stored === '1';
-        } else {
-            hideEnabled = isGitHubRepoPage() && hasMetaOnPage();
-        }
-
-        if (hideEnabled) applyHideAll();
-        maybeUpdateFloatingButtonVisibility();
-        setupObservers();
-
-        setTimeout(() => {
-            if (hasMetaOnPage()) showPopup();
-        }, 400);
-
-        patchLocationChange();
-        window.addEventListener('locationchange', onLocationChange);
-        window.addEventListener('popstate', onLocationChange);
+    async function loadSettings() {
+        try {
+            if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.sync) {
+                const res = await chrome.storage.sync.get(SETTINGS_KEY);
+                if (res && res[SETTINGS_KEY]) {
+                    settings = { ...DEFAULT_SETTINGS, ...res[SETTINGS_KEY] };
+                }
+            }
+        } catch { }
     }
 
     function onLocationChange() {
-        disableDynamicHiding = false;
-
         if (observerLeft) observerLeft.disconnect();
         if (observerRight) observerRight.disconnect();
         observerLeft = observerRight = null;
@@ -463,17 +440,18 @@
         const hasMeta = hasMetaOnPage();
         if (repoPage && hasMeta) {
             maybeUpdateFloatingButtonVisibility();
-            if (hideEnabled) applyHideAll();
+            if (enabledForThisPage) applyHideAll();
         } else {
             removeFloatingButton();
         }
 
         setupObservers();
+        syncFloatingButtonPosition();
     }
 
     function patchLocationChange() {
-        if (history.__hideMetaPatched) return;
-        history.__hideMetaPatched = true;
+        if (history.__unityMetaFilterPatched) return;
+        history.__unityMetaFilterPatched = true;
 
         const pushState = history.pushState;
         history.pushState = function () { pushState.apply(history, arguments); window.dispatchEvent(new Event('locationchange')); };
@@ -481,37 +459,40 @@
         history.replaceState = function () { replaceState.apply(history, arguments); window.dispatchEvent(new Event('locationchange')); };
     }
 
-    function showPopup() {
-        if (popupEl) return;
-        const p = document.createElement('div');
-        p.id = 'meta-hide-popup';
-        p.innerHTML = `<span>${t('popupHidden')}</span>  <a href="#" id="disable-meta-hide" style="color:#0a58e9; text-decoration:underline; cursor:pointer;">${t('popupShow')}</a>`;
-        Object.assign(p.style, {
-            position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%) translateY(0)',
-            background: '#24292f', color: '#fff', padding: '10px 16px', borderRadius: '6px',
-            fontSize: '13px', zIndex: '9999', display: 'flex', gap: '12px', alignItems: 'center',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.3)', opacity: '0', transition: 'opacity 0.25s ease, transform 0.25s ease'
-        });
-        const link = p.querySelector('#disable-meta-hide');
-        if (link) {
-            link.addEventListener('click', e => {
-                e.preventDefault();
-                disableDynamicHiding = true;
-                applyShowAll();
+    function setupMessageListener() {
+        try {
+            if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+                chrome.runtime.onMessage.addListener((msg) => {
+                    if (!msg || msg.type !== 'UMF_SETTINGS_UPDATED') return;
+                    if (msg.settings && typeof msg.settings === 'object') {
+                        settings = { ...DEFAULT_SETTINGS, ...msg.settings };
 
-                if (observerLeft) observerLeft.disconnect();
-                if (observerRight) observerRight.disconnect();
-                p.style.opacity = '0';
-                p.style.transform = 'translateX(-50%) translateY(20px)';
-                setTimeout(() => p.remove(), 250);
-            });
-        }
-        document.body.appendChild(p);
-        popupEl = p;
-        requestAnimationFrame(() => {
-            p.style.opacity = '1';
-            p.style.transform = 'translateX(-50%) translateY(0)';
-        });
+                        // If user disabled one side, immediately unhide once so UI matches.
+                        // Then re-apply hiding for the remaining enabled panels.
+                        if (msg.forceRefresh) {
+                            applyShowAll();
+                        }
+
+                        if (enabledForThisPage) applyHideAll(); else applyShowAll();
+                        maybeUpdateFloatingButtonVisibility();
+                    }
+                });
+            }
+        } catch { }
+    }
+
+    // Initialize after DOM ready
+    async function init() {
+        await loadSettings();
+
+        if (enabledForThisPage) applyHideAll();
+        maybeUpdateFloatingButtonVisibility();
+        setupObservers();
+
+        patchLocationChange();
+        setupMessageListener();
+        window.addEventListener('locationchange', onLocationChange);
+        window.addEventListener('popstate', onLocationChange);
     }
 
     function setup() {
